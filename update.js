@@ -9,7 +9,10 @@ const LEVELID = parseInt(process.argv[2]); // -1 for daily, -2 for weekly, -3 fo
 function parseResponse(res) {
     const responses = res.split("#");
     const l = Object.fromEntries(responses[0].split(":").map((e, i, a) => i % 2 == 0 ? [e, a[i + 1]] : null).filter(e => e != null));
-    const dailyInfo = {};
+    const dailyInfo = {
+        timelyID: 0,
+        dates: []
+    };
     if (LEVELID == -1) {
         dailyInfo.timelyID = parseInt(l[41]);
         const dailyDate = new Date(daily[0].dates[0]);
@@ -45,57 +48,97 @@ function newLineForEveryEntryButDontPrettifyEverything(obj) {
     return JSON.stringify(obj).replace(/\},\{/g, "},\n  {").replace("[", "[\n  ").slice(0, -1) + "\n]";
 }
 
-fetch("https://www.boomlings.com/database/downloadGJLevel22.php", {
-    method: "POST",
-    headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": ""
-    },
-    body: `gameVersion=22&binaryVersion=42&levelID=${LEVELID}&secret=Wmfd2893gb7`,
-}).then(r => r.text()).then(res => {
-    if (res == "-1") {
-        if (LEVELID == -1) console.log("Invalid daily response");
-        else if (LEVELID == -2) console.log("Invalid weekly response");
-        else if (LEVELID == -3) console.log("Invalid event response");
+async function getDaily() {
+    const dailyName = LEVELID == -1 ? "daily" : LEVELID == -2 ? "weekly" : LEVELID == -3 ? "event" : "";
+    const dailyUpper = dailyName[0].toUpperCase() + dailyName.slice(1);
+    const dailyJSON = LEVELID == -1 ? daily : LEVELID == -2 ? weekly : LEVELID == -3 ? event : [];
+    const response = await fetch("https://www.boomlings.com/database/downloadGJLevel22.php", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": ""
+        },
+        body: `gameVersion=22&binaryVersion=42&levelID=${LEVELID}&secret=Wmfd2893gb7`,
+    });
+    const dailyText = await response.text();
+    if (dailyText == "-1") {
+        console.log(`Invalid ${dailyName} response, falling back to safe`);
+        const safe = await getSafe();
+        const safeIndex = safe.findIndex(x => x.id == dailyJSON[0].id);
+        if (safeIndex == -1) {
+            console.log(`No safe ${dailyName} found`);
+            return;
+        }
+        console.log(`Safe ${dailyName} found at index ${safeIndex}`);
+        const firstID = dailyJSON[0].id;
+        const firstDates = dailyJSON[0].dates;
+        for (let i = safeIndex - 1; i >= 0; i--) {
+            safe[i].dailyID = firstID + safeIndex - i;
+            safe[i].dates = firstDates.map(d => {
+                const date = new Date(d);
+                date.setUTCDate(date.getUTCDate() + safe[i].dailyID - firstID);
+                return date.getUTCFullYear() + "-" + (date.getUTCMonth() + 1).toString().padStart(2, "0") + "-" + date.getUTCDate().toString().padStart(2, "0");
+            });
+            dailyJSON.unshift(safe[i]);
+        }
         return;
     }
-    else if (res.startsWith("<")) {
-        if (LEVELID == -1) console.log("Banned from daily by Cloudflare");
-        else if (LEVELID == -2) console.log("Banned from weekly by Cloudflare");
-        else if (LEVELID == -3) console.log("Banned from event by Cloudflare");
+    else if (dailyText.startsWith("<") || dailyText.startsWith("error code:")) {
+        console.log(`${dailyUpper} Cloudflare error: ${dailyText}`);
         return;
     }
 
-    if (LEVELID == -1) console.log(`Daily response: ${res.replace(/:4:[^:]+/, "")}`);
-    else if (LEVELID == -2) console.log(`Weekly response: ${res.replace(/:4:[^:]+/, "")}`);
-    else if (LEVELID == -3) console.log(`Event response: ${res.replace(/:4:[^:]+/, "")}`);
+    console.log(`${dailyUpper} response: ${dailyText.replace(/:4:[^:]+/, "")}`);
+    const parsedResponse = parseResponse(dailyText);
 
-    const parsedResponse = parseResponse(res);
-    if (LEVELID == -1) {
-        if (daily[0].id == parsedResponse.id) {
-            console.log("Daily already up to date");
-            return;
-        }
-
-        console.log(JSON.stringify(parsedResponse));
-        fs.writeFileSync(path.join(__dirname, "v2", "daily.json"), newLineForEveryEntryButDontPrettifyEverything([parsedResponse, ...daily]));
+    if (dailyJSON[0].id == parsedResponse.id) {
+        console.log(`${dailyUpper} already up to date`);
+        return;
     }
-    else if (LEVELID == -2) {
-        if (weekly[0].id == parsedResponse.id) {
-            console.log("Weekly already up to date");
-            return;
-        }
 
-        console.log(JSON.stringify(parsedResponse));
-        fs.writeFileSync(path.join(__dirname, "v2", "weekly.json"), newLineForEveryEntryButDontPrettifyEverything([parsedResponse, ...weekly]));
-    }
-    else if (LEVELID == -3) {
-        if (event[0].id == parsedResponse.id) {
-            console.log("Event already up to date");
-            return;
-        }
+    console.log(JSON.stringify(parsedResponse));
 
-        console.log(JSON.stringify(parsedResponse));
-        fs.writeFileSync(path.join(__dirname, "v2", "event.json"), newLineForEveryEntryButDontPrettifyEverything([parsedResponse, ...event]));
+    if (parsedResponse.timelyID - dailyJSON[0].timelyID == 1) {
+        console.log(`Skipping ${dailyName} safe`);
+        dailyJSON.unshift(parsedResponse);
+        fs.writeFileSync(path.join(__dirname, "v2", `${dailyName}.json`), newLineForEveryEntryButDontPrettifyEverything(dailyJSON));
+        return;
     }
-});
+
+    const safe = await getSafe();
+    const safeIndex = safe.findIndex(x => x.id == dailyJSON[0].id);
+    if (safeIndex == -1) {
+        console.log(`No safe ${dailyName} found`);
+        return;
+    }
+    console.log(`Safe ${dailyName} found at index ${safeIndex}`);
+    const firstID = dailyJSON[0].timelyID;
+    const firstDates = dailyJSON[0].dates;
+    for (let i = safeIndex - 1; i > 0; i--) {
+        safe[i].timelyID = firstID + safeIndex - i;
+        safe[i].dates = firstDates.map(d => {
+            const date = new Date(d);
+            date.setUTCDate(date.getUTCDate() + safe[i].timelyID - firstID);
+            return date.getUTCFullYear() + "-" + (date.getUTCMonth() + 1).toString().padStart(2, "0") + "-" + date.getUTCDate().toString().padStart(2, "0");
+        });
+        dailyJSON.unshift(safe[i]);
+    }
+
+    dailyJSON.unshift(parsedResponse);
+    fs.writeFileSync(path.join(__dirname, "v2", `${dailyName}.json`), newLineForEveryEntryButDontPrettifyEverything(dailyJSON));
+}
+
+async function getSafe() {
+    const response = await fetch("https://www.boomlings.com/database/getGJLevels21.php", {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": ""
+        },
+        body: `gameVersion=22&binaryVersion=42&type=${LEVELID == -1 ? 21 : LEVELID == -2 ? 22 : LEVELID == -3 ? 23 : 0}&secret=Wmfd2893gb7`,
+    });
+    const safeText = await response.text();
+    return safeText.split("#")[0].split("|").map(parseResponse);
+}
+
+getDaily();
