@@ -142,7 +142,7 @@ async function getDaily(id) { // -1 for daily, -2 for weekly, -3 for event
         dailyJSON.unshift(safe[i]);
     }
 
-    console.log(`${parsedResponse.name} / ${dailyNames.join(" / ")}`);
+    console.log(`${dailyNames.join(" / ")} / ${parsedResponse.name}`);
     delete parsedResponse.name;
     dailyJSON.unshift(parsedResponse);
     await saveDaily(dailyJSON, dailyName);
