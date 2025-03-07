@@ -4,22 +4,20 @@ const daily = require("./v2/daily.json");
 const weekly = require("./v2/weekly.json");
 const event = require("./v2/event.json");
 
-const LEVELID = parseInt(process.argv[2]); // -1 for daily, -2 for weekly, -3 for event
-
-function parseResponse(res) {
+function parseResponse(id, res) {
     const responses = res.split("#");
     const l = Object.fromEntries(responses[0].split(":").map((e, i, a) => i % 2 == 0 ? [e, a[i + 1]] : null).filter(e => e != null));
     const dailyInfo = {
         timelyID: 0,
         dates: []
     };
-    if (LEVELID == -1) {
+    if (id == -1) {
         dailyInfo.timelyID = parseInt(l[41]);
         const dailyDate = new Date(daily[0].dates[0]);
         dailyDate.setUTCDate(dailyDate.getUTCDate() + (dailyInfo.timelyID - daily[0].timelyID));
         dailyInfo.dates = [dailyDate.getUTCFullYear() + "-" + (dailyDate.getUTCMonth() + 1).toString().padStart(2, "0") + "-" + dailyDate.getUTCDate().toString().padStart(2, "0")];
     }
-    else if (LEVELID == -2) {
+    else if (id == -2) {
         dailyInfo.timelyID = parseInt(l[41]) - 100000;
         dailyInfo.dates = weekly[0].dates.map(d => {
             const date = new Date(d);
@@ -27,7 +25,7 @@ function parseResponse(res) {
             return date.getUTCFullYear() + "-" + (date.getUTCMonth() + 1).toString().padStart(2, "0") + "-" + date.getUTCDate().toString().padStart(2, "0");
         });
     }
-    else if (LEVELID == -3) {
+    else if (id == -3) {
         dailyInfo.timelyID = parseInt(l[41]) - 200000;
         dailyInfo.dates = [];
         const date = new Date(event[1].dates[event[1].dates.length - 1]);
@@ -39,37 +37,54 @@ function parseResponse(res) {
     }
     return {
         id: parseInt(l[1]),
+        name: l[2],
         ...dailyInfo,
         tier: 0
     };
 }
 
-function newLineForEveryEntryButDontPrettifyEverything(obj) {
-    return JSON.stringify(obj).replace(/\},\{/g, "},\n  {").replace("[", "[\n  ").slice(0, -1) + "\n]";
+const GDDL = [];
+
+async function updateTiersAndStringify(daily) {
+    for (let i = 0; i < daily.length; i++) {
+        const index = GDDL.findIndex(d => d.id == daily[i].id);
+        daily[i].tier = index >= 0 ? GDDL[index].tier : 0;
+    }
+    return JSON.stringify(daily).replace(/\},\{/g, "},\n  {").replace("[", "[\n  ").slice(0, -1) + "\n]";
 }
 
-async function getDaily() {
-    const dailyName = LEVELID == -1 ? "daily" : LEVELID == -2 ? "weekly" : LEVELID == -3 ? "event" : "";
+async function saveDaily(daily, dailyName) {
+    await fs.promises.writeFile(path.join(__dirname, "v2", `${dailyName}.json`), await updateTiersAndStringify(daily));
+}
+
+async function getDaily(id) { // -1 for daily, -2 for weekly, -3 for event
+    const dailyName = id == -1 ? "daily" : id == -2 ? "weekly" : id == -3 ? "event" : "";
+    const dailyType = id == -1 ? 21 : id == -2 ? 22 : id == -3 ? 23 : 0;
     const dailyUpper = dailyName[0].toUpperCase() + dailyName.slice(1);
-    const dailyJSON = LEVELID == -1 ? daily : LEVELID == -2 ? weekly : LEVELID == -3 ? event : [];
+    const dailyJSON = id == -1 ? daily : id == -2 ? weekly : id == -3 ? event : [];
     const response = await fetch("https://www.boomlings.com/database/downloadGJLevel22.php", {
         method: "POST",
         headers: {
             "Content-Type": "application/x-www-form-urlencoded",
             "User-Agent": ""
         },
-        body: `gameVersion=22&binaryVersion=42&levelID=${LEVELID}&secret=Wmfd2893gb7`,
+        body: `gameVersion=22&binaryVersion=42&levelID=${id}&secret=Wmfd2893gb7`,
     });
+    if (!response.ok) {
+        console.log(`${dailyUpper} response not ok: ${response.status}`);
+        return await saveDaily(dailyJSON, dailyName);
+    }
     const dailyText = await response.text();
     if (dailyText == "-1") {
-        console.log(`Invalid ${dailyName} response, falling back to safe`);
-        const safe = await getSafe();
+        const safe = await getSafe(dailyType);
+        if (safe.length == 0) return await saveDaily(dailyJSON, dailyName);
+
         const safeIndex = safe.findIndex(x => x.id == dailyJSON[0].id);
         if (safeIndex == -1) {
             console.log(`No safe ${dailyName} found`);
-            return;
+            return await saveDaily(dailyJSON, dailyName);
         }
-        console.log(`Safe ${dailyName} found at index ${safeIndex}`);
+
         const firstID = dailyJSON[0].id;
         const firstDates = dailyJSON[0].dates;
         for (let i = safeIndex - 1; i >= 0; i--) {
@@ -79,41 +94,42 @@ async function getDaily() {
                 date.setUTCDate(date.getUTCDate() + safe[i].dailyID - firstID);
                 return date.getUTCFullYear() + "-" + (date.getUTCMonth() + 1).toString().padStart(2, "0") + "-" + date.getUTCDate().toString().padStart(2, "0");
             });
+            delete safe[i].name;
             dailyJSON.unshift(safe[i]);
         }
-        return;
+        return await saveDaily(dailyJSON, dailyName);
     }
     else if (dailyText.startsWith("<") || dailyText.startsWith("error code:")) {
         console.log(`${dailyUpper} Cloudflare error: ${dailyText}`);
-        return;
+        return await saveDaily(dailyJSON, dailyName);
     }
 
-    console.log(`${dailyUpper} response: ${dailyText.replace(/:4:[^:]+/, "")}`);
-    const parsedResponse = parseResponse(dailyText);
-
-    if (dailyJSON[0].id == parsedResponse.id) {
+    if (dailyJSON[0].id == parseInt(Object.fromEntries(dailyText.split("#")[0].split(":").map((e, i, a) => i % 2 == 0 ? [e, a[i + 1]] : null).filter(e => e != null))[1])) {
         console.log(`${dailyUpper} already up to date`);
-        return;
+        return await saveDaily(dailyJSON, dailyName);
     }
 
-    console.log(JSON.stringify(parsedResponse));
+    const parsedResponse = parseResponse(id, dailyText);
 
     if (parsedResponse.timelyID - dailyJSON[0].timelyID == 1) {
-        console.log(`Skipping ${dailyName} safe`);
+        console.log(parsedResponse.name);
+        delete parsedResponse.name;
         dailyJSON.unshift(parsedResponse);
-        fs.writeFileSync(path.join(__dirname, "v2", `${dailyName}.json`), newLineForEveryEntryButDontPrettifyEverything(dailyJSON));
-        return;
+        return await saveDaily(dailyJSON, dailyName);
     }
 
-    const safe = await getSafe();
+    const safe = await getSafe(dailyType);
+    if (safe.length == 0) return await saveDaily(dailyJSON, dailyName);
+
     const safeIndex = safe.findIndex(x => x.id == dailyJSON[0].id);
     if (safeIndex == -1) {
         console.log(`No safe ${dailyName} found`);
-        return;
+        return await saveDaily(dailyJSON, dailyName);
     }
-    console.log(`Safe ${dailyName} found at index ${safeIndex}`);
+
     const firstID = dailyJSON[0].timelyID;
     const firstDates = dailyJSON[0].dates;
+    const dailyNames = [];
     for (let i = safeIndex - 1; i > 0; i--) {
         safe[i].timelyID = firstID + safeIndex - i;
         safe[i].dates = firstDates.map(d => {
@@ -121,24 +137,49 @@ async function getDaily() {
             date.setUTCDate(date.getUTCDate() + safe[i].timelyID - firstID);
             return date.getUTCFullYear() + "-" + (date.getUTCMonth() + 1).toString().padStart(2, "0") + "-" + date.getUTCDate().toString().padStart(2, "0");
         });
+        dailyNames.push(safe[i].name);
+        delete safe[i].name;
         dailyJSON.unshift(safe[i]);
     }
 
+    console.log(`${parsedResponse.name} / ${dailyNames.join(" / ")}`);
+    delete parsedResponse.name;
     dailyJSON.unshift(parsedResponse);
-    fs.writeFileSync(path.join(__dirname, "v2", `${dailyName}.json`), newLineForEveryEntryButDontPrettifyEverything(dailyJSON));
+    await saveDaily(dailyJSON, dailyName);
 }
 
-async function getSafe() {
+async function getSafe(type) {
     const response = await fetch("https://www.boomlings.com/database/getGJLevels21.php", {
         method: "POST",
         headers: {
             "Content-Type": "application/x-www-form-urlencoded",
             "User-Agent": ""
         },
-        body: `gameVersion=22&binaryVersion=42&type=${LEVELID == -1 ? 21 : LEVELID == -2 ? 22 : LEVELID == -3 ? 23 : 0}&secret=Wmfd2893gb7`,
+        body: `gameVersion=22&binaryVersion=42&type=${type}&secret=Wmfd2893gb7`,
     });
+    if (!response.ok) {
+        console.log(`Safe response not ok: ${response.status}`);
+        return [];
+    }
     const safeText = await response.text();
-    return safeText.split("#")[0].split("|").map(parseResponse);
+    return safeText.split("#")[0].split("|").map(x => parseResponse(0, x));
 }
 
-getDaily();
+(async () => {
+    const args = process.argv.length > 2 ? process.argv.slice(2) : ["-1", "-2", "-3"];
+
+    const response = await fetch("https://docs.google.com/spreadsheets/d/1qKlWKpDkOpU1ZF6V6xGfutDY2NvcA8MNPnsv6GBkKPQ/gviz/tq?tqx=out:csv&sheet=GDDL");
+    if (response.ok) {
+        const csv = await response.text();
+        const lines = csv.replace(/\r/g, "").split("\n").map(l => l.slice(1, -1).split('","'));
+        const header = lines.shift();
+        const data = lines.map(l => Object.fromEntries(l.map((e, i) => [header[i], e])));
+        for (const level of data) GDDL.push({
+            id: parseInt(level["ID"]),
+            tier: !Number.isNaN(parseFloat(level["Tier"])) ? Math.round(parseFloat(level["Tier"])) : 0
+        });
+    }
+    else console.log(`GDDL response not ok: ${response.status}`);
+
+    for (const arg of args) getDaily(parseInt(arg));
+})();
