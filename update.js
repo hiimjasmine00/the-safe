@@ -181,5 +181,5 @@ async function getSafe(type) {
     }
     else console.log(`GDDL response not ok: ${response.status}`);
 
-    for (const arg of args) getDaily(parseInt(arg));
+    for (const arg of args) await getDaily(parseInt(arg));
 })();
