@@ -85,18 +85,22 @@ async function getDaily(id) { // -1 for daily, -2 for weekly, -3 for event
             return await saveDaily(dailyJSON, dailyName);
         }
 
-        const firstID = dailyJSON[0].id;
+        const firstID = dailyJSON[0].timelyID;
         const firstDates = dailyJSON[0].dates;
+        const dailyNames = [];
         for (let i = safeIndex - 1; i >= 0; i--) {
-            safe[i].dailyID = firstID + safeIndex - i;
+            safe[i].timelyID = firstID + safeIndex - i;
             safe[i].dates = firstDates.map(d => {
                 const date = new Date(d);
-                date.setUTCDate(date.getUTCDate() + safe[i].dailyID - firstID);
+                date.setUTCDate(date.getUTCDate() + safe[i].timelyID - firstID);
                 return date.getUTCFullYear() + "-" + (date.getUTCMonth() + 1).toString().padStart(2, "0") + "-" + date.getUTCDate().toString().padStart(2, "0");
             });
+            dailyNames.push(safe[i].name);
             delete safe[i].name;
             dailyJSON.unshift(safe[i]);
         }
+        if (dailyNames.length > 0) console.log(dailyNames.join(" / "));
+        else console.log(`${dailyUpper} already up to date`);
         return await saveDaily(dailyJSON, dailyName);
     }
     else if (dailyText.startsWith("<") || dailyText.startsWith("error code:")) {
