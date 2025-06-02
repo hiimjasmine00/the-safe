@@ -1,7 +1,7 @@
 > [!WARNING]
 > This repository is no longer maintained. All future data will be stored in the websites below.\
-> https://the-safe.hiimjasmine00.com/daily\
-> https://the-safe.hiimjasmine00.com/weekly\
+> https://the-safe.hiimjasmine00.com/daily \
+> https://the-safe.hiimjasmine00.com/weekly \
 > https://the-safe.hiimjasmine00.com/event
 
 # The Safe
